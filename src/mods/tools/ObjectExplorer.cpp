@@ -317,6 +317,24 @@ genny::Enum* enum_from_name(genny::Namespace* g, const std::string& enum_name) {
     return new_ns->enum_(namespaces.back());
 }
 
+std::string get_method_prototype_context_name(sdk::REMethodDefinition& m) {
+    auto method_name = m.get_name();
+    auto method_param_types = m.get_param_types();
+
+    std::stringstream ss_context{};
+    ss_context << method_name << "(";
+
+    for (auto i = 0; i < method_param_types.size(); i++) {
+        if (i > 0) {
+            ss_context << ", ";
+        }
+        ss_context << method_param_types[i]->get_full_name();
+    }
+
+    ss_context << ")";
+    return ss_context.str();
+}
+
 std::shared_ptr<ObjectExplorer>& ObjectExplorer::get() {
     static auto instance = std::make_shared<ObjectExplorer>();
 
@@ -517,10 +535,14 @@ void ObjectExplorer::on_draw_dev_ui() {
 
         for (auto i = 0; i < tdb->get_num_modules(); ++i) {
             auto& module = tdb->modules[i];
+
+            std::string_view assembly_name{ module.get_assembly_name() != nullptr ? module.get_assembly_name() : "Unknown" };
+            std::string_view module_name{ module.get_module_name() != nullptr ? module.get_module_name() : "Unknown" };
+            std::string_view location{ module.get_location() != nullptr ? module.get_location() : "Unknown" };
             
-            if (ImGui::TreeNode(module.get_assembly_name())) {
-                ImGui::Text("Location: %s", module.get_location());
-                ImGui::Text("Module Name: %s", module.get_module_name());
+            if (ImGui::TreeNode(assembly_name.data())) {
+                ImGui::Text("Location: %s", location.data());
+                ImGui::Text("Module Name: %s", module_name.data());
                 
                 if (ImGui::TreeNode("Assembly Types")) {
                     std::vector<uint8_t> fake_type{ 0 };
@@ -727,6 +749,8 @@ void ObjectExplorer::on_frame() {
         bool open = true;
 
         ImGui::SetNextWindowSize(ImVec2(200, 400), ImGuiCond_::ImGuiCond_Once);
+        ImGui::PushFont(g_framework->get_default_font(), g_framework->get_font_size());
+
         if (ImGui::Begin("Read Listeners", &open)) {
             std::shared_lock _{m_veh_state.listener_mtx};
 
@@ -747,6 +771,8 @@ void ObjectExplorer::on_frame() {
             }
         }
 
+        ImGui::PopFont();
+
         if (!open) {
             m_veh_state.clear_all_hardware_breakpoints();
         }
@@ -759,11 +785,15 @@ void ObjectExplorer::on_frame() {
         // the pinned objects in a separate window
 
         ImGui::SetNextWindowSize(ImVec2(200, 400), ImGuiCond_::ImGuiCond_Once);
+        ImGui::PushFont(g_framework->get_default_font(), g_framework->get_font_size());
+
         if (ImGui::Begin("Pinned objects", &open)) {
             display_pins();
 
             ImGui::End();
         }
+
+        ImGui::PopFont();
 
         if (!open) {
             m_pinned_objects.clear();
@@ -777,11 +807,15 @@ void ObjectExplorer::on_frame() {
         // the pinned objects in a separate window
 
         ImGui::SetNextWindowSize(ImVec2(400, 800), ImGuiCond_::ImGuiCond_Once);
+        ImGui::PushFont(g_framework->get_default_font(), g_framework->get_font_size());
+
         if (ImGui::Begin("Hooked methods", &open)) {
             display_hooks();
 
             ImGui::End();
         }
+
+        ImGui::PopFont();
 
         if (!open) {
             for (auto& h : m_hooked_methods) {
@@ -845,6 +879,30 @@ void ObjectExplorer::display_hooks() {
             }
 
             ImGui::EndCombo();
+        }
+
+        // Auto-unhook options
+        ImGui::Checkbox("Enable Auto Unhook", &m_hooks_context.enable_auto_unhook);
+
+        if (m_hooks_context.enable_auto_unhook) {
+            if (ImGui::BeginCombo("Auto Unhook When", HooksContext::s_auto_unhook_method_names[(uint8_t)m_hooks_context.auto_unhook_method])) {
+                for (int i = 0; i < HooksContext::s_auto_unhook_method_names.size(); i++) {
+                    const bool is_selected = (m_hooks_context.auto_unhook_method == (HooksContext::AutoUnhookMethod)i);
+
+                    if (ImGui::Selectable(HooksContext::s_auto_unhook_method_names[i], is_selected)) {
+                        m_hooks_context.auto_unhook_method = (HooksContext::AutoUnhookMethod)i;
+                    }
+
+                    if (is_selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
+
+            // Always make it editable regardless of the auto unhook method, this is intentional
+            ImGui::InputScalar("Max Call Count", ImGuiDataType_U32, &m_hooks_context.auto_unhook_call_count_threshold);
         }
 
         ImGui::TreePop();
@@ -1211,6 +1269,10 @@ void ObjectExplorer::generate_sdk(const bool skip_sdkgenny) {
         type_entry["name_hierarchy"] = t.get_name_hierarchy();
         type_entry["is_generic_type"] = t.is_generic_type();
         type_entry["is_generic_type_definition"] = t.is_generic_type_definition();
+
+        if (auto declaring_type = t.get_declaring_type(); declaring_type != nullptr) {
+            type_entry["declaring_type"] = declaring_type->get_full_name();
+        }
 
 #if TDB_VER >= 71
         if (tdef->element_typeid_TBD != 0) {
@@ -4249,7 +4311,7 @@ void ObjectExplorer::hook_method(sdk::REMethodDefinition* method, std::optional<
     if (name) {
         hooked.name = method->get_declaring_type()->get_full_name() + "." + *name;
     } else {
-        hooked.name = method->get_declaring_type()->get_full_name() + "." + method->get_name();
+        hooked.name = method->get_declaring_type()->get_full_name() + "." +  get_method_prototype_context_name(*method);
     }
 
     using namespace asmjit;
@@ -4322,6 +4384,23 @@ void ObjectExplorer::hook_all_methods(sdk::RETypeDefinition* t) {
     }
 }
 
+void ObjectExplorer::unhook_all_methods(sdk::RETypeDefinition* t) {
+    if (t == nullptr) {
+        return;
+    }
+
+    const auto methods = t->get_methods();
+
+    for (auto& m : methods) {
+        auto it = std::find_if(m_hooked_methods.begin(), m_hooked_methods.end(), [&m](auto& hook) { return hook.method == &m; });
+
+        if (it != m_hooked_methods.end()) {
+            g_hookman.remove(it->method, it->hook_id);
+            m_hooked_methods.erase(it);
+        }
+    }
+}
+
 void ObjectExplorer::method_context_menu(sdk::REMethodDefinition* method, std::optional<std::string> name, ::REManagedObject* obj) {
     auto additional_ctx = [&]() {
         auto it = std::find_if(m_hooked_methods.begin(), m_hooked_methods.end(), [method](auto& hook) { return hook.method == method; });
@@ -4353,6 +4432,18 @@ void ObjectExplorer::method_context_menu(sdk::REMethodDefinition* method, std::o
 
                 m_frame_jobs.push_back([this, declaring_type]() {
                     hook_all_methods(declaring_type);
+                });
+            }
+        }
+
+        if (ImGui::Selectable("Unhook All Methods")) {
+            const auto declaring_type = method->get_declaring_type();
+
+            if (declaring_type != nullptr) {
+                std::scoped_lock _{m_job_mutex};
+
+                m_frame_jobs.push_back([this, declaring_type]() {
+                    unhook_all_methods(declaring_type);
                 });
             }
         }
@@ -5268,15 +5359,15 @@ HookManager::PreHookResult ObjectExplorer::pre_hooked_method_internal(std::vecto
                 added = true;
             };
 
-            if (method_entry != nullptr) {
+            if (method_entry) {
                 const auto module_addr = (uintptr_t)utility::get_module_within(ret_addr).value_or(nullptr);
                 const auto ret_addr_rva = (uint32_t)(ret_addr - module_addr);
                 const auto ret_addr_entry = utility::find_function_entry(ret_addr);
 
                 // First condition isn't as heavy as fully disassembling the function which is the second condition
-                if (ret_addr_entry == method_entry ||
+                if ((ret_addr_entry && ret_addr_entry->BeginAddress == method_entry->BeginAddress && ret_addr_entry->EndAddress == method_entry->EndAddress) ||
                     (ret_addr_rva >= method_entry->BeginAddress && ret_addr_rva <= method_entry->EndAddress) ||
-                    (ret_addr_entry != nullptr && ret_addr_entry->BeginAddress >= method_entry->BeginAddress && ret_addr_entry->BeginAddress <= method_entry->EndAddress + 1))
+                    (ret_addr_entry && ret_addr_entry->BeginAddress >= method_entry->BeginAddress && ret_addr_entry->BeginAddress <= method_entry->EndAddress + 1))
                 {
                     add_method();
                 } else {
@@ -5365,6 +5456,20 @@ void ObjectExplorer::post_hooked_method_internal(uintptr_t& ret_val, sdk::REType
     const auto delta = now - hooked_method.stats.last_call_times[tid];
     hooked_method.stats.last_call_delta = delta;
     hooked_method.stats.total_call_time += delta;
+    
+    // Auto-unhook check
+    if (m_hooks_context.enable_auto_unhook && m_hooks_context.auto_unhook_method == HooksContext::AutoUnhookMethod::EXCEED_CALL_COUNT) {
+        if (hooked_method.stats.call_count >= m_hooks_context.auto_unhook_call_count_threshold) {
+            std::scoped_lock job_lock{m_job_mutex};
+            m_frame_jobs.push_back([this, method]() {
+                auto it2 = std::find_if(m_hooked_methods.begin(), m_hooked_methods.end(), [method](auto& a) { return a.method == method; });
+                if (it2 != m_hooked_methods.end()) {
+                    g_hookman.remove(it2->method, it2->hook_id);
+                    m_hooked_methods.erase(it2);
+                }
+            });
+        }
+    }
 }
 
 void ObjectExplorer::post_hooked_method(uintptr_t& ret_val, sdk::RETypeDefinition*& ret_ty, uintptr_t ret_addr, sdk::REMethodDefinition* method) {

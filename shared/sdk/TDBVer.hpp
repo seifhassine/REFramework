@@ -4,10 +4,14 @@
 #define TDB_VER 67
 #elif defined(PRAGMATA)
 #define TDB_VER 84
+#elif defined(RE9)
+#define TDB_VER 83
+#elif defined(STARFORCE)
+#define TDB_VER 78
 #elif defined(MHSTORIES3)
 #define TDB_VER 82
 #elif defined(MHWILDS)
-#define TDB_VER 74
+#define TDB_VER 81
 #elif defined(DD2)
 #define TDB_VER 73
 #elif defined(SF6)
@@ -44,6 +48,7 @@
 
 namespace sdk {
 struct RETypeDefVersion84;
+struct RETypeDefVersion83;
 struct RETypeDefVersion82;
 struct RETypeDefVersion74;
 struct RETypeDefVersion71;
@@ -61,6 +66,14 @@ struct RETypeDefinition;
 #define TYPE_INDEX_BITS 19
 #define FIELD_BITS 20
 using RETypeDefinition_ = sdk::RETypeDefVersion84;
+#elif defined(RE9)
+#define TYPE_INDEX_BITS 19
+#define FIELD_BITS 20
+using RETypeDefinition_ = sdk::RETypeDefVersion83;
+#elif defined(STARFORCE)
+#define TYPE_INDEX_BITS 19
+#define FIELD_BITS 19
+using RETypeDefinition_ = sdk::RETypeDefVersion74;
 #elif defined(MHSTORIES3)
 #define TYPE_INDEX_BITS 19
 #define FIELD_BITS 20
